@@ -4,8 +4,14 @@ import os
 from dotenv import load_dotenv
 from clawops.agent import ClawOpsAgent, OpenAIRealtime
 
-load_dotenv()
+load_dotenv()  # .env 파일에서 CLAWOPS_API_KEY, OPENAI_API_KEY, CLAWOPS_ACCOUNT_ID 로드
 
+# ─────────────────────────────────────────────
+# 시스템 프롬프트
+# AI 상담 전화의 대화 흐름을 정의한다.
+# 순서: 복약 확인 → 식사 확인 → 기분/우울 선별(PHQ-9 기반) → 인지 기능(지남력) → 마무리
+# 말투는 따뜻하고 쉬운 단어로, 의학적 진단은 하지 않는다.
+# ─────────────────────────────────────────────
 SYSTEM_PROMPT = """당신은 어르신의 건강을 돌보는 친절한 AI 상담 전화 도우미입니다. 통화가 시작되면 다음 순서로 진행하세요.
 
 1. **복약 확인**: "안녕하세요, 오늘 약 드셨나요?"
@@ -23,6 +29,11 @@ SYSTEM_PROMPT = """당신은 어르신의 건강을 돌보는 친절한 AI 상�
 
 말투는 항상 따뜻하고 천천히, 쉬운 단어로 말하세요. 절대 의학적 진단을 내리지 말고, 선별 참고용임을 염두에 두세요."""
 
+# ─────────────────────────────────────────────
+# 통화 기록 파일
+# 매 세션마다 AI 발화(questions.json)와 사용자 응답(answers.json)을 누적 저장한다.
+# 두 파일은 동일한 id와 call_id로 대응되며, LLM 기반 지표 산출에 사용된다.
+# ─────────────────────────────────────────────
 QUESTIONS_FILE = "questions.json"
 ANSWERS_FILE = "answers.json"
 
@@ -37,11 +48,19 @@ def _save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def _next_id():
+    # 기존 questions.json의 마지막 id 기준으로 다음 순번 반환
     questions = _load_json(QUESTIONS_FILE)
     return (questions[-1]["id"] + 1) if questions else 1
 
+# 통화 중 AI의 마지막 발화를 임시 보관 (질문-응답 쌍 매칭용)
 _call_state: dict = {}
 
+# ─────────────────────────────────────────────
+# ClawOps 에이전트 초기화
+# 기본 예시(플랫폼 온보딩 코드)는 사용자가 먼저 전화를 거는 수신 방식이나,
+# 효프는 관리 서버가 정해진 시간에 발신하는 구조이므로 agent.call() 방식으로 전환하였다.
+# LLM: OpenAI Realtime (한국어, coral 보이스, semantic VAD 적용)
+# ─────────────────────────────────────────────
 agent = ClawOpsAgent(
     from_="07052361090",
     session=OpenAIRealtime(
@@ -73,8 +92,10 @@ async def on_transcript(call, role, text):
         return
 
     if role != "user":
+        # AI 발화를 pending으로 보관, 다음 사용자 응답과 쌍으로 저장
         state["pending_question"] = text
     elif state["pending_question"]:
+        # 질문-응답 쌍 완성 시 각 파일에 append
         turn_id = _next_id()
         questions = _load_json(QUESTIONS_FILE)
         answers = _load_json(ANSWERS_FILE)
@@ -85,6 +106,7 @@ async def on_transcript(call, role, text):
         state["pending_question"] = None
 
 async def main():
+    # 현재는 수동 입력 방식이며, 추후 Spring 백엔드에서 번호와 발신 스케줄을 전달받아 대체할 예정
     to_number = input("발신할 전화번호를 입력하세요 (예: 01012345678): ").strip()
     print(f"{to_number}으로 전화를 겁니다...")
     call = await agent.call(to=to_number)
