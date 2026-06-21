@@ -9,7 +9,7 @@
 
 1. **인지 저하는 AI가 판단하지 않는다** — VoiceML에 MMSE식 지남력 질문을 넣고 정답/오답을 규칙 기반으로 채점. AI가 추론하는 게 아니라 "오늘이 몇 년도예요?"에 틀리면 점수가 깎이는 구조.
 2. **감정/정서 플래깅은 파인튜닝 모델이 담당** — "뭔가 이상한데" 수준의 신호 감지. 진단이 아닌 참고용. Gemini가 뽑은 점수를 보정하는 역할.
-3. **쓸 수 있는 데이터는 두 개** — 노년층 대상 감성 분류(텍스트), 생성형AI 고령자 구술 데이터(텍스트 전사본). 음성 파일 안 씀. 두 데이터 모두 감정/정서 보정에 활용.
+3. **쓸 수 있는 데이터는 6개** — AI Hub 2개(노년층 감성 분류, 고령자 구술) + 공개 감정 데이터 4개(KOTE 50k·KEmoFact 16.5k·KorEmpatheticDialogues 24.8k·GoEmotions-Korean 58k). 노인 특화는 AI Hub 두 개가 유일하고, 나머지는 감정 분류 보강용.
 4. **모델 서빙은 base_url 한 줄** — KoELECTRA(소형 분류기)는 FastAPI 안에 직접 올리고, 생성 모델(EXAONE 등)은 Ollama/vLLM으로 서빙 후 base_url만 교체. Spring 파이프라인은 건드릴 필요 없음.
 5. **모든 지표는 참고용** — 보호자에게 "확인해보세요" 알림을 보내는 트리거일 뿐, 임상 진단이 아님을 명시해야 함.
 
@@ -114,20 +114,34 @@ def score_orientation(answers: dict, recipient: dict) -> dict:
 
 ### 사용 가능한 데이터셋
 
-| 데이터셋 | 접근 | 내용 | 활용 방향 |
+#### 노인 특화 (AI Hub)
+
+| 데이터셋 | 크기 | 내용 | 활용 방향 |
 |---|---|---|---|
-| **노년층 대상 감성 분류** ([링크](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=453)) | AI Hub 신청 | 노인-챗봇 2~4턴 대화 텍스트, 감정 6종 레이블 | 감정 분류기 파인튜닝 |
-| **생성형AI 고령자 구술 데이터** ([링크](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71703)) | AI Hub 신청 | 텍스트 전사본 + 우울/불안 점수, 기억 특이성 점수 | 우울·불안 플래깅 보조 |
+| **노년층 대상 감성 분류** ([링크](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=453)) | 노인-챗봇 2~4턴 대화 | 감정 6종 레이블 (분노/기쁨/불안/당황/슬픔/상처) | 감정 분류기 파인튜닝 핵심 데이터 |
+| **생성형AI 고령자 구술 데이터** ([링크](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71703)) | 143,630건 | 텍스트 전사본 + 우울/불안 점수, 기억 특이성 점수 | 우울·불안 플래깅 보조 |
 
 > 음성 파일(WAV)은 사용하지 않음. 텍스트 전사본과 JSON 레이블만 사용.
 
-### 할 수 있는 것 / 없는 것
+#### 공개 감정 데이터 (신청 불필요, 즉시 사용 가능)
+
+| 데이터셋 | 크기 | 감정 레이블 | 라이선스 | 노인 적합도 |
+|---|---|---|---|---|
+| **KOTE** ([HuggingFace](https://huggingface.co/datasets/searle-j/kote)) | 50,000건 | 44종 (슬픔/절망/불안/힘듦/행복 등) | MIT | ★★★ |
+| **KEmoFact** ([PMC 부록](https://pmc.ncbi.nlm.nih.gov/articles/PMC10613607/)) | 16,532건 | 22종 (lonely/afraid/sad/content 등) | CC-BY-4.0 | ★★★ |
+| **KorEmpatheticDialogues** ([HuggingFace](https://huggingface.co/datasets/passing2961/KorEmpatheticDialogues)) | 24,800건 | 32종 (lonely/anxious/nostalgic 등) | CC-BY-NC-4.0 | ★★★ |
+| **GoEmotions-Korean** ([GitHub](https://github.com/monologg/GoEmotions-Korean)) | 58,000건 | 28종 (grief/fear/sadness/relief 등) | Apache-2.0 | ★★ |
+
+> KOTE 44종 레이블 중 노인 케어 관련: 슬픔, 절망, 불안/걱정, 힘듦/지침, 서러움, 안심/신뢰, 행복, 귀찮음, 아껴주는
+> KoELECTRA/KoBERT 파인튜닝에 가장 많이 쓰이는 데이터셋이 KOTE.
+
+#### 쓸 수 없는 것
 
 | 가능 | 불가능 |
 |---|---|
-| 감정 6종 분류 (슬픔/불안 등) | PHQ-9 임상 진단 |
-| 우울·불안 수준 플래깅 | MCI/치매 분류 |
-| Gemini 점수 보정 참고값 제공 | 정신건강 의학적 판단 |
+| 감정 분류 및 플래깅 | PHQ-9 임상 진단 |
+| 우울·불안 수준 참고값 | MCI/치매 분류 |
+| Gemini 점수 보정 | 정신건강 의학적 판단 |
 
 ### 권장 모델
 
@@ -246,9 +260,19 @@ Spring ↔ FastAPI 파이프라인은 전혀 건드릴 필요 없음.
 
 ## 7. 참고 링크
 
-- [AI Hub — 노년층 대상 감성 분류](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=453)
-- [AI Hub — 생성형AI 고령자 구술 데이터](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71703)
-- [EXAONE-3.5 (HuggingFace)](https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct)
+**데이터셋**
+- [AI Hub — 노년층 대상 감성 분류 (dataSetSn=453)](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=453)
+- [AI Hub — 생성형AI 고령자 구술 데이터 (dataSetSn=71703)](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71703)
+- [KOTE — 44종 한국어 감정 (HuggingFace)](https://huggingface.co/datasets/searle-j/kote)
+- [KEmoFact — 22종 감정 (PMC 논문 부록)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10613607/)
+- [KorEmpatheticDialogues — 32종 감정 (HuggingFace)](https://huggingface.co/datasets/passing2961/KorEmpatheticDialogues)
+- [GoEmotions-Korean — 28종 감정 (GitHub)](https://github.com/monologg/GoEmotions-Korean)
+
+**모델**
 - [KoELECTRA-v3 (HuggingFace)](https://huggingface.co/monologg/koelectra-base-v3-discriminator)
+- [EXAONE-3.5-7.8B (HuggingFace)](https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct)
 - [HuggingFace PEFT (LoRA/QLoRA)](https://huggingface.co/docs/peft)
-- [CareCall 논문 (BMC Geriatrics 2026)](https://pmc.ncbi.nlm.nih.gov/articles/PMC12924473/)
+
+**논문**
+- [CareCall (BMC Geriatrics 2026)](https://pmc.ncbi.nlm.nih.gov/articles/PMC12924473/)
+- [KOTE 논문 (arXiv:2205.05300)](https://arxiv.org/pdf/2205.05300)
