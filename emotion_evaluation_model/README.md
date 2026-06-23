@@ -89,6 +89,20 @@ pip install -r emotion_evaluation_model/requirements.txt
 python emotion_evaluation_model/train_emotion_classifier.py
 ```
 
+### Evaluate Saved Model
+
+```bash
+python emotion_evaluation_model/evaluate_model.py
+```
+
+This generates an evaluation report at:
+
+```text
+emotion_evaluation_model/outputs/evaluation_report.txt
+```
+
+The generated report file is excluded from Git by `.gitignore`.
+
 ### Run Prediction
 
 ```bash
@@ -127,13 +141,3 @@ Confidence가 낮은 경우 단일 감정 라벨을 확정적으로 사용하지
 이 모델은 HYOPE의 Gemini 분석 결과를 보조하는 감정 플래깅 모델입니다.
 
 향후 KoELECTRA 기반 파인튜닝 모델로 고도화할 수 있습니다.
-
-## Commit
-
-README 저장 후 다음 명령어로 커밋합니다.
-
-```powershell
-git add emotion_evaluation_model/README.md
-git commit -m "docs: add submission generation usage"
-git push origin feature/evaluation-model
-```
