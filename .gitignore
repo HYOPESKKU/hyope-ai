@@ -1,0 +1,13 @@
+# Emotion evaluation model artifacts
+emotion_evaluation_model/outputs/*
+!emotion_evaluation_model/outputs/.gitkeep
+
+# Local data/model artifacts
+emotion_evaluation_model/data/
+emotion_evaluation_model/models/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
