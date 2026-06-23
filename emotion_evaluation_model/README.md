@@ -106,6 +106,20 @@ Low confidence  : False
 Top emotions    : ['불안', '당황', '슬픔']
 ```
 
+### Generate Test Prediction Submission
+
+```bash
+python emotion_evaluation_model/generate_submission.py
+```
+
+This creates:
+
+```text
+emotion_evaluation_model/outputs/submission.csv
+```
+
+The generated submission file is excluded from Git by `.gitignore`.
+
 ## Notes
 
 Confidence가 낮은 경우 단일 감정 라벨을 확정적으로 사용하지 않고, `top-3` 감정과 `care signal`을 함께 참고합니다.
@@ -120,6 +134,6 @@ README 저장 후 다음 명령어로 커밋합니다.
 
 ```powershell
 git add emotion_evaluation_model/README.md
-git commit -m "docs: document baseline emotion evaluation model"
+git commit -m "docs: add submission generation usage"
 git push origin feature/evaluation-model
 ```
