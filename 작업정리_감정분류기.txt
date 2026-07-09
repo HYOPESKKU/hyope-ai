@@ -1,0 +1,138 @@
+================================================================
+HYOPE 자체 AI 모델 (감정 분류기) 작업 정리
+작성일: 2026-07-09
+================================================================
+
+■ 목표
+----------------------------------------------------------------
+KoELECTRA-v3를 AI Hub "노년층 대상 감성 분류" 데이터로 파인튜닝해
+6종 감정(분노/기쁨/불안/당황/슬픔/상처) 분류기를 만든다.
+학습된 모델은 hyope-ai-server에서 OpenAI(GPT) 분석 점수를 보정하는
+참고용 감정 플래깅에 사용한다. (AI_model_research.md의 로드맵 3단계)
+
+
+■ 기존에 이미 있던 것 (hyope-ai)
+----------------------------------------------------------------
+- train/config.py       : 6종 레이블, 학습 하이퍼파라미터 설정
+- train/data_loader.py  : AI Hub zip + KOTE + KorEmpatheticDialogues 로딩
+- train/label_mapper.py : KOTE 44종 / Empathetic 32종 → 6종 매핑
+- train/train.py        : HuggingFace Trainer 학습 (early stopping, f1_macro)
+- train/predict.py      : EmotionPredictor 추론 클래스 (FastAPI 통합용)
+- emotionClassification_train.zip : AI Hub 학습 데이터 (train.csv)
+- emotionClassification_test.zip  : AI Hub 테스트 데이터
+
+
+■ 새로 만든 것 (기존 코드는 하나도 수정 안 함, 파일 추가만)
+----------------------------------------------------------------
+1) notebooks/train_emotion_classifier.ipynb
+   전체 학습 워크플로우 노트북:
+   - 데이터 로딩: 소스별(AI Hub/KOTE/KorEmpathetic) 건수 확인
+   - EDA: 감정 레이블 분포 차트, 텍스트 길이 분포 (max_length=256 적정성 확인)
+   - 데이터 분할: 아래 "분할 전략" 참고
+   - 학습: train.py와 같은 하이퍼파라미터 + fp16 추가
+           (RTX 3070 Ti 기준 약 2배 빠름), model_output/에 저장
+   - 평가: 보류 테스트셋 분류 리포트, 혼동 행렬(행 정규화),
+           높은 확신도로 틀린 사례 오류 분석
+   - 추론 데모: 노인 발화 예시 문장 + 무레이블 test.csv 예측 미리보기
+
+2) train/evaluate.py
+   학습된 모델을 보류 테스트셋으로 평가하는 스크립트.
+   노트북과 분할 로직을 공유 (같은 seed → 같은 보류셋).
+   실행: cd train && python evaluate.py [모델경로]  (기본: ../model_output)
+
+
+■ 중요 발견 사항
+----------------------------------------------------------------
+1) test.csv에는 레이블이 없다!
+   emotionClassification_test.zip의 test.csv는 캐글식 제출용 분할이라
+   감정_대분류 컬럼이 없음 (sample_submission.csv는 전부 "기쁨"인 더미).
+   → 채점 가능한 테스트셋은 train.csv에서 직접 만들어야 함.
+
+2) 분할 전략 (노트북에 구현됨)
+   AI Hub ──┬── 90% ──┐
+            └── 10% ──┼──────────────→ 보류 테스트셋 (학습에 절대 미사용)
+   KOTE ──────────────┤
+   KorEmpathetic ─────┴── 학습 풀 ──┬── 90% → 학습셋
+                                    └── 10% → 검증셋 (early stopping)
+   - 보류셋은 AI Hub에서만 뗀다: 재고 싶은 건 "노인 발화 도메인" 성능이고
+     KOTE/Empathetic은 학습 보강용이기 때문.
+
+3) 주의: train.py CLI로 학습하면 안 됨 (평가 목적일 때)
+   train/train.py의 train()은 AI Hub 전체를 학습에 사용하므로,
+   그 모델을 evaluate.py로 평가하면 보류셋이 학습에 섞여 점수가 부풀려짐.
+   정직한 평가는 노트북 방식(보류셋 제외 후 학습)으로 학습했을 때만 유효.
+
+4) 로컬 GPU 확인 결과: RTX 3070 Ti 8GB
+   - KoELECTRA(110M) 파인튜닝: 충분함 (batch 32 여유)
+   - EXAONE-3.5-7.8B QLoRA: 빠듯함 → Colab Pro / RunPod 확보 후 진행 권장
+
+
+■ 실행 방법
+----------------------------------------------------------------
+cd hyope-ai
+pip install -r requirements.txt
+pip install jupyter matplotlib pandas    # 노트북 전용 의존성
+jupyter notebook notebooks/train_emotion_classifier.ipynb
+
+※ 차트 한글 폰트: WSL/리눅스면 sudo apt install fonts-nanum
+  (폰트 없으면 노트북이 경고 출력, 차트 한글이 네모로 깨짐)
+
+
+■ 다음 단계
+----------------------------------------------------------------
+1) FastAPI 통합
+   hyope-ai-server에 model_output/ 복사(또는 경로 참조) 후:
+     from predict import EmotionPredictor
+     emotion_predictor = EmotionPredictor("./model_output")  # CPU로도 동작
+   /analyze-call 응답에 OpenAI(GPT) 분석 점수 옆 참고용 감정 플래그로 추가.
+   ※ 현재 llm_analyzer.py와 phq_classifier.py는 Gemini(OpenAI 호환 엔드포인트)를
+     호출하고 있음. OpenAI로 전환하려면 base_url 제거 + api_key를
+     OPENAI_API_KEY로 교체 + model을 "gpt-4.1-mini" 등으로 변경하면 됨.
+
+2) 개선 실험
+   - 클래스 불균형 대응 (소수 레이블 가중 loss, 샘플링 비율 조정)
+   - use_kote / use_empathetic on/off 비교 → 공개 데이터 보강이
+     AI Hub 보류셋 성능에 실제 도움되는지 확인
+   - AI Hub 고령자 구술 데이터(dataSetSn=71703) 승인 후
+     우울·불안 회귀 태스크 추가
+
+3) EXAONE-3.5 QLoRA 파인튜닝
+   GPU(Colab Pro / RunPod) 확보 후 별도 노트북으로.
+   설정값은 AI_model_research.md §3~4 참고.
+
+
+■ 장기 계획: 사업화 시 외부 AI API 완전 대체
+----------------------------------------------------------------
+사업화 단계에서는 OpenAI 등 외부 API를 거치지 않고,
+자체 파인튜닝 모델을 우리 서버에서 직접 돌리는 방향도 고려한다.
+
+[왜 자체 모델인가]
+- 개인정보: 어르신 통화 내용이 외부 서버로 나가지 않음
+  (독거노인 건강·정서 데이터는 민감정보 → 온프레미스가 사업화에 유리)
+- 비용: 통화량이 늘수록 API 종량제보다 자체 GPU 서버가 저렴해짐
+- 의존성: 외부 API 정책 변경·단가 인상·장애에 영향받지 않음
+
+[전환 단계]
+1단계 (지금): KoELECTRA 분류기
+  - 이미 자체 모델. FastAPI 안에 직접 탑재, CPU로도 동작
+  - 외부 API 없이 돌아가는 첫 번째 컴포넌트
+2단계: 생성 모델 파인튜닝 (EXAONE-3.5 등 한국어 오픈소스 LLM)
+  - QLoRA로 통화 분석·요약 태스크 파인튜닝
+  - 학습 데이터: 실서비스에서 쌓이는 통화 Q&A + OpenAI 분석 결과를
+    교사 데이터로 활용 (distillation)
+3단계: 자체 서빙으로 교체
+  - vLLM(프로덕션) 또는 Ollama(개발·데모)로 OpenAI 호환 API 서빙
+  - llm_analyzer.py가 이미 OpenAI SDK 기반이라
+    base_url 한 줄만 자체 서버 주소로 바꾸면 끝:
+      OpenAI(api_key="local", base_url="http://우리서버:8001/v1")
+  - Spring ↔ FastAPI 파이프라인은 전혀 수정 불필요
+
+[필요 인프라]
+- EXAONE-3.5-7.8B 4-bit 추론 기준 VRAM 약 6GB~ (RTX 3070 Ti로 추론은 가능)
+- 프로덕션은 vLLM + 전용 GPU 서버 권장 (동시 요청 처리)
+- 단계적 전환 가능: 감정 분류(자체) → 통화 분석(자체) → PHQ 분류(자체)
+  순서로 하나씩 옮기고, 자체 모델 품질이 검증될 때까지
+  OpenAI를 폴백(fallback)으로 유지
+
+상세 서빙 방법·GPU 서버 선택지는 AI_model_research.md §4 참고.
+================================================================
