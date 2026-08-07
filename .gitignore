@@ -1,4 +1,24 @@
+# 학습 산출물 (KoELECTRA)
 model_output/
+model_output_backup*/
+
+# 학습 산출물 (emotion_evaluation_model)
+emotion_evaluation_model/outputs/*
+!emotion_evaluation_model/outputs/.gitkeep
+emotion_evaluation_model/data/
+emotion_evaluation_model/models/
+
+# 데이터셋 원본
 *.zip
-**/__pycache__/
+
+# 체크포인트/가중치
 *.bin
+*.pt
+*.pth
+*.safetensors
+
+# Python
+**/__pycache__/
+*.pyc
+.venv/
+.env
