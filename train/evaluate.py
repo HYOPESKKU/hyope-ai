@@ -18,7 +18,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
 from config import LABELS, TrainConfig
-from data_loader import load_aihub_data
+from data_loader import load_aihub_data, load_somatic_seed
 from predict import EmotionPredictor
 
 TEST_RATIO = 0.1
@@ -27,12 +27,22 @@ TEST_RATIO = 0.1
 def split_aihub_holdout(
     config: TrainConfig = TrainConfig(), test_ratio: float = TEST_RATIO
 ) -> tuple[list[dict], list[dict]]:
-    """AI Hub 데이터를 (학습용, 보류 테스트용)으로 계층화 분할한다.
+    """평가용 데이터를 (학습용, 보류 테스트용)으로 계층화 분할한다.
 
-    보류셋은 노인 발화 도메인 성능을 재는 게 목적이므로 AI Hub 데이터에서만 뗀다.
-    KOTE·KorEmpatheticDialogues는 학습 보강용이라 보류셋에 포함하지 않는다.
+    보류셋은 노인 발화 도메인 성능을 재는 게 목적이라 AI Hub에서 떼는 것이
+    원칙이다. KOTE·KorEmpatheticDialogues는 학습 보강용이라 제외한다.
+
+    다만 신체불편은 AI Hub에 0건이라 AI Hub만 쓰면 보류셋에 그 라벨이 아예
+    없게 된다. 그러면 5종 중 4종만 채점되는데, 정작 healthRisk와 직결되는
+    라벨이 측정에서 빠지는 셈이다. 그래서 시드에서도 같은 비율로 떼어 넣는다.
+
+    ⚠ 신체불편 점수는 시드 데이터 자기 자신에 대한 점수라 다른 라벨과 같은
+      의미로 읽으면 안 된다. 시드는 작성된 문장이라 실제 통화 발화보다 쉽다.
     """
     samples = load_aihub_data(config)
+    if config.use_somatic_seed:
+        samples += load_somatic_seed(config)
+
     rest, holdout = train_test_split(
         samples,
         test_size=test_ratio,

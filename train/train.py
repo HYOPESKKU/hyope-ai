@@ -1,4 +1,5 @@
 import random
+from collections import Counter
 
 import numpy as np
 import torch
@@ -15,6 +16,33 @@ from transformers import (
 
 from config import ID2LABEL, LABEL2ID, LABELS, TrainConfig
 from data_loader import build_dataset
+
+
+class WeightedTrainer(Trainer):
+    """클래스 가중치를 적용한 Trainer.
+
+    신체불편은 시드 데이터뿐이라 다른 라벨의 1/50 수준이다. 가중치 없이
+    학습하면 그 라벨을 아예 예측하지 않는 게 손실 함수 관점에서 이득이라
+    모델이 그렇게 수렴한다. healthRisk 신호가 통째로 죽는다는 뜻이다.
+    """
+
+    def __init__(self, *args, class_weights: torch.Tensor | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        loss = torch.nn.functional.cross_entropy(
+            outputs.logits,
+            labels,
+            weight=(
+                self.class_weights.to(outputs.logits.device)
+                if self.class_weights is not None
+                else None
+            ),
+        )
+        return (loss, outputs) if return_outputs else loss
 
 
 class EmotionDataset(Dataset):
@@ -88,13 +116,28 @@ def train(config: TrainConfig = TrainConfig()):
         report_to="none",
     )
 
-    trainer = Trainer(
+    # 클래스 가중치 = 전체평균빈도 / 클래스빈도 (역빈도 가중)
+    class_weights = None
+    if config.use_class_weights:
+        dist = Counter(s["label"] for s in train_samples)
+        counts = torch.tensor([dist.get(i, 0) for i in range(len(LABELS))], dtype=torch.float)
+        # 빈도 0인 클래스가 있으면 0으로 나눠 inf가 된다. 학습이 NaN으로 터지므로 막는다.
+        if (counts == 0).any():
+            missing = [LABELS[i] for i, c in enumerate(counts) if c == 0]
+            raise ValueError(f"학습 데이터에 없는 라벨: {missing}")
+        class_weights = counts.mean() / counts
+        print("클래스 가중치: " + ", ".join(
+            f"{name}={w:.2f}" for name, w in zip(LABELS, class_weights.tolist())
+        ))
+
+    trainer = WeightedTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=config.early_stopping_patience)],
+        class_weights=class_weights,
     )
 
     trainer.train()

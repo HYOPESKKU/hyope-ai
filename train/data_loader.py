@@ -2,11 +2,13 @@ import csv
 import io
 import urllib.request
 import zipfile
+from collections import Counter
+from pathlib import Path
 
 from datasets import load_dataset
 
-from config import LABEL2ID, TrainConfig
-from label_mapper import EMPATHETIC_TO_6, KOTE_TO_6
+from config import LABEL2ID, LABELS, TrainConfig
+from label_mapper import AIHUB_TO_5, EMPATHETIC_TO_5, KOTE_TO_5
 
 # searle-j/kote는 HF Hub에 커스텀 로딩 스크립트(kote.py)로만 올라와 있고
 # 최신 datasets 라이브러리는 스크립트 방식을 더 이상 지원하지 않는다.
@@ -24,16 +26,20 @@ _KOTE_TRAIN_URL = "https://raw.githubusercontent.com/searle-j/KOTE/main/train.ts
 
 
 def load_aihub_data(config: TrainConfig) -> list[dict]:
-    """AI Hub 노년층 감성 분류 CSV 로딩.
+    """AI Hub 감성 분류 CSV 로딩 → 돌봄 라벨 5종 매핑.
 
     CSV 구조: 성별, 감정_대분류, 사람문장1~4, 시스템응답1~4
     사람문장 1~4를 이어붙여 하나의 텍스트로 사용한다.
+
+    주의: 이 zip은 원본 감성대화 말뭉치(27만 문장, 소분류 60종, 세대별 분리)의
+    축약본이라 감정_소분류도 연령 컬럼도 없다. 노년 발화만 골라낼 수 없다.
     """
     with zipfile.ZipFile(config.aihub_train_zip) as z:
         with z.open("train.csv") as f:
             content = f.read().decode("utf-8-sig")
 
     samples = []
+    skipped = 0
     for row in csv.DictReader(io.StringIO(content)):
         sentences = [
             row[f"사람문장{i}"].strip()
@@ -41,16 +47,20 @@ def load_aihub_data(config: TrainConfig) -> list[dict]:
             if row.get(f"사람문장{i}", "").strip()
         ]
         text = " ".join(sentences)
-        label = row["감정_대분류"].strip()
-        if text and label in LABEL2ID:
-            samples.append({"text": text, "label": LABEL2ID[label]})
+        mapped = AIHUB_TO_5.get(row["감정_대분류"].strip())
+        if not text:
+            continue
+        if mapped is None:
+            skipped += 1
+            continue
+        samples.append({"text": text, "label": LABEL2ID[mapped]})
 
-    print(f"[AI Hub] {len(samples)}건 로드")
+    print(f"[AI Hub] {len(samples)}건 로드 (5종 매핑 제외 {skipped}건)")
     return samples
 
 
 def load_kote_data() -> list[dict]:
-    """KOTE 44종 감정 공개 데이터 로딩 → 6종 매핑.
+    """KOTE 44종 감정 공개 데이터 로딩 → 5종 매핑.
 
     multi-label이므로 첫 번째로 매핑되는 레이블만 사용한다.
     GitHub: searle-j/KOTE (dichotomized train split)
@@ -65,7 +75,7 @@ def load_kote_data() -> list[dict]:
         if not text:
             continue
         for idx in row["labels"].split(","):
-            mapped = KOTE_TO_6.get(_KOTE_LABELS[int(idx)])
+            mapped = KOTE_TO_5.get(_KOTE_LABELS[int(idx)])
             if mapped:
                 samples.append({"text": text, "label": LABEL2ID[mapped]})
                 break
@@ -75,7 +85,7 @@ def load_kote_data() -> list[dict]:
 
 
 def load_empathetic_data() -> list[dict]:
-    """KorEmpatheticDialogues 32종 감정 공개 데이터 로딩 → 6종 매핑.
+    """KorEmpatheticDialogues 32종 감정 공개 데이터 로딩 → 5종 매핑.
 
     EmpatheticDialogues 번역본. emotion 컬럼이 감정 레이블(영문 32종).
     HuggingFace: passing2961/KorEmpatheticDialogues
@@ -87,11 +97,31 @@ def load_empathetic_data() -> list[dict]:
         text = (row.get("situation") or "").strip()
         # 감정: emotion 컬럼 (영문 소문자)
         raw_label = (row.get("emotion") or "").strip().lower()
-        mapped = EMPATHETIC_TO_6.get(raw_label)
+        mapped = EMPATHETIC_TO_5.get(raw_label)
         if mapped and text:
             samples.append({"text": text, "label": LABEL2ID[mapped]})
 
     print(f"[KorEmpathetic] {len(samples)}건 로드")
+    return samples
+
+
+def load_somatic_seed(config: TrainConfig) -> list[dict]:
+    """신체불편 시드 로딩.
+
+    세 공개 소스 어디에도 신체 증상 호소 발화가 없어서 직접 작성한 데이터다.
+    실제 노인 발화가 아니므로 통화 데이터가 쌓이면 교체해야 한다.
+    """
+    path = Path(config.somatic_seed_file)
+    if not path.exists():
+        print(f"[신체불편] 시드 파일 없음: {path} — 건너뜀")
+        return []
+
+    samples = [
+        {"text": line, "label": LABEL2ID["신체불편"]}
+        for line in (l.strip() for l in path.read_text(encoding="utf-8").splitlines())
+        if line and not line.startswith("#")
+    ]
+    print(f"[신체불편] 시드 {len(samples)}건 로드")
     return samples
 
 
@@ -105,5 +135,20 @@ def build_dataset(config: TrainConfig) -> list[dict]:
     if config.use_empathetic:
         samples += load_empathetic_data()
 
+    if config.use_somatic_seed:
+        samples += load_somatic_seed(config)
+
+    dist = Counter(s["label"] for s in samples)
     print(f"[전체] {len(samples)}건")
+    for i, name in enumerate(LABELS):
+        n = dist.get(i, 0)
+        print(f"  {name:<6} {n:>7,}건 ({n / len(samples) * 100:5.2f}%)")
+
+    # 신체불편은 시드뿐이라 극단적으로 적다. 조용히 넘어가면 모델이 이 라벨을
+    # 사실상 예측하지 않는 채로 학습이 끝나므로 눈에 띄게 경고한다.
+    rarest = min(dist.values()) if dist else 0
+    if rarest and max(dist.values()) / rarest > 20:
+        print(f"  ⚠ 클래스 불균형 {max(dist.values()) / rarest:.0f}:1 — "
+              f"config.use_class_weights 확인 필요")
+
     return samples
