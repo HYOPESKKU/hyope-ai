@@ -105,24 +105,64 @@ def load_empathetic_data() -> list[dict]:
     return samples
 
 
-def load_somatic_seed(config: TrainConfig) -> list[dict]:
-    """신체불편 시드 로딩.
+def _read_utterance_file(path: Path) -> list[str]:
+    """한 줄에 발화 하나. 빈 줄과 #으로 시작하는 줄은 무시한다.
 
-    세 공개 소스 어디에도 신체 증상 호소 발화가 없어서 직접 작성한 데이터다.
-    실제 노인 발화가 아니므로 통화 데이터가 쌓이면 교체해야 한다.
+    검수는 거부할 줄 앞에 #을 붙이는 방식이라, 주석 처리된 줄이 곧 탈락분이다.
     """
-    path = Path(config.somatic_seed_file)
-    if not path.exists():
-        print(f"[신체불편] 시드 파일 없음: {path} — 건너뜀")
-        return []
-
-    samples = [
-        {"text": line, "label": LABEL2ID["신체불편"]}
+    return [
+        line
         for line in (l.strip() for l in path.read_text(encoding="utf-8").splitlines())
         if line and not line.startswith("#")
     ]
-    print(f"[신체불편] 시드 {len(samples)}건 로드")
-    return samples
+
+
+def _is_reviewed(path: Path) -> bool:
+    """파일 상단의 "# REVIEWED: yes" 마커를 확인한다.
+
+    자동 추출 후보를 검수 없이 학습에 넣으면 절반가량이 오염 데이터다.
+    실수로 섞이지 않도록 명시적 마커를 요구한다.
+    """
+    for line in path.read_text(encoding="utf-8").splitlines()[:20]:
+        if line.strip().lower().replace(" ", "").startswith("#reviewed:"):
+            return line.split(":", 1)[1].strip().lower() in ("yes", "y", "true", "완료")
+    return False
+
+
+def load_somatic_seed(config: TrainConfig) -> list[dict]:
+    """신체불편 데이터 로딩 — 직접 작성한 시드 + 검수 완료된 자동 추출 후보.
+
+    세 공개 소스의 감정 라벨 어디에도 신체 증상 호소가 없어서 만든 데이터다.
+    실제 노인 발화가 아니므로 통화 데이터가 쌓이면 교체해야 한다.
+    """
+    texts: list[str] = []
+
+    seed_path = Path(config.somatic_seed_file)
+    if seed_path.exists():
+        seed_texts = _read_utterance_file(seed_path)
+        texts += seed_texts
+        print(f"[신체불편] 시드 {len(seed_texts)}건")
+    else:
+        print(f"[신체불편] 시드 파일 없음: {seed_path}")
+
+    cand_path = Path(config.somatic_candidates_file)
+    if cand_path.exists():
+        if _is_reviewed(cand_path):
+            cand_texts = _read_utterance_file(cand_path)
+            texts += cand_texts
+            print(f"[신체불편] 검수 완료 후보 {len(cand_texts)}건")
+        else:
+            print(f"[신체불편] {cand_path.name}은 검수 전이라 제외 "
+                  f'(검수 끝나면 상단을 "# REVIEWED: yes"로 바꿀 것)')
+
+    # 다듬는 과정에서 서로 다른 문장이 같은 표현으로 수렴하기 쉽다.
+    # near-duplicate가 쌓이면 모델이 그 표현 하나만 외우므로 완전 중복은 제거한다.
+    unique = list(dict.fromkeys(texts))
+    if len(unique) < len(texts):
+        print(f"[신체불편] 중복 {len(texts) - len(unique)}건 제거")
+
+    print(f"[신체불편] 최종 {len(unique)}건")
+    return [{"text": t, "label": LABEL2ID["신체불편"]} for t in unique]
 
 
 def build_dataset(config: TrainConfig) -> list[dict]:

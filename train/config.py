@@ -44,6 +44,8 @@ class TrainConfig:
     # 데이터 경로
     aihub_train_zip: str = str(BASE_DIR / "emotionClassification_train.zip")
     somatic_seed_file: str = str(BASE_DIR / "data" / "somatic_seed.txt")
+    # 자동 추출 후보. 파일 상단이 "# REVIEWED: yes"일 때만 학습에 들어간다.
+    somatic_candidates_file: str = str(BASE_DIR / "data" / "somatic_candidates.txt")
     output_dir: str = str(BASE_DIR / "model_output")
 
     # 학습 하이퍼파라미터
