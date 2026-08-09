@@ -1,3 +1,4 @@
+import random
 import csv
 import io
 import urllib.request
@@ -165,15 +166,43 @@ def load_somatic_seed(config: TrainConfig) -> list[dict]:
     return [{"text": t, "label": LABEL2ID["신체불편"]} for t in unique]
 
 
+def _cap_per_label(samples: list[dict], cap: int | None, seed: int, name: str) -> list[dict]:
+    """보조 소스를 라벨당 cap건으로 제한한다.
+
+    앞에서부터 자르지 않고 무작위 표집한다. KOTE는 원본 파일 순서에 편향이
+    있을 수 있어 앞부분만 쓰면 표현이 한쪽으로 쏠린다. seed로 재현성은 유지한다.
+    """
+    if cap is None:
+        return samples
+
+    by_label: dict[int, list[dict]] = {}
+    for s in samples:
+        by_label.setdefault(s["label"], []).append(s)
+
+    rng = random.Random(seed)
+    capped: list[dict] = []
+    trimmed = 0
+    for label, group in by_label.items():
+        if len(group) > cap:
+            trimmed += len(group) - cap
+            group = rng.sample(group, cap)
+        capped += group
+
+    if trimmed:
+        print(f"[{name}] 라벨당 상한 {cap:,}건 적용 — {trimmed:,}건 제외")
+    return capped
+
+
 def build_dataset(config: TrainConfig) -> list[dict]:
     """전체 학습 데이터 구성."""
     samples = load_aihub_data(config)
+    cap = config.max_per_label_per_aux_source
 
     if config.use_kote:
-        samples += load_kote_data()
+        samples += _cap_per_label(load_kote_data(), cap, config.seed, "KOTE")
 
     if config.use_empathetic:
-        samples += load_empathetic_data()
+        samples += _cap_per_label(load_empathetic_data(), cap, config.seed, "KorEmpathetic")
 
     if config.use_somatic_seed:
         samples += load_somatic_seed(config)

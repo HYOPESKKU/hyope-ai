@@ -61,6 +61,17 @@ class TrainConfig:
     use_kote: bool = True                  # KOTE 44종 공개 데이터
     use_empathetic: bool = True            # KorEmpatheticDialogues 공개 데이터
     use_somatic_seed: bool = True          # 신체불편 시드 (직접 작성, 검수 필요)
+
+    # 보조 소스(KOTE·KorEmpathetic)의 라벨당 상한.
+    #
+    # 상한이 없으면 KOTE 혼자 39,355건으로 전체의 62%를 차지하고, 그중 분노가
+    # 19,911건이라 전체 분노의 82%가 온라인 댓글에서 온다. 반면 노인 페르소나가
+    # 있는 유일한 소스인 AI Hub는 13.4%로 밀린다.
+    # 평가는 AI Hub 보류셋으로 하므로 학습 분포와 평가 분포가 어긋나게 된다.
+    #
+    # None이면 상한 없음.
+    max_per_label_per_aux_source: int | None = 2000
+
     val_ratio: float = 0.1
     seed: int = 42
 
