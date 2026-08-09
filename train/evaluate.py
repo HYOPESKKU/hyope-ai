@@ -18,7 +18,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
 from config import LABELS, TrainConfig
-from data_loader import load_aihub_data, load_somatic_seed
+from data_loader import load_aihub_data, load_somatic_negatives, load_somatic_seed
 from predict import EmotionPredictor
 
 TEST_RATIO = 0.1
@@ -42,6 +42,9 @@ def split_aihub_holdout(
     samples = load_aihub_data(config)
     if config.use_somatic_seed:
         samples += load_somatic_seed(config)
+        # 신체 정상 응답도 보류셋에 넣는다. 이 구분을 못 하면 healthRisk가
+        # 오작동하므로 반드시 측정 대상이어야 한다.
+        samples += load_somatic_negatives(config)
 
     rest, holdout = train_test_split(
         samples,

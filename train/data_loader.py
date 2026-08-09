@@ -166,6 +166,31 @@ def load_somatic_seed(config: TrainConfig) -> list[dict]:
     return [{"text": t, "label": LABEL2ID["신체불편"]} for t in unique]
 
 
+def load_somatic_negatives(config: TrainConfig) -> list[dict]:
+    """신체 질문에 대한 정상 응답 → 긍정 라벨.
+
+    "당뇨가 있지만 크게 아픈 데는 없어" 같은 문장이다. 신체불편 데이터는
+    전부 신체 단어를 포함하는데 긍정 라벨(AI Hub 기쁨)에는 신체 단어가 거의
+    없다. 그대로 학습하면 모델이 "신체 단어가 보이면 신체불편"이라는 지름길을
+    잡아서, 통화에서 "무릎은 괜찮아"라고 답해도 healthRisk를 올린다.
+
+    ⚠ 이 파일은 오염되기 쉽다. 자동 추출 때 `없어`를 부정 표현으로 잡았다가
+      "돈이 없어", "관심이 없어"까지 긁어와 68건 중 57건이 잘못 들어갔었다.
+      아픈 문장이 긍정 라벨로 들어가면 학습이 정면으로 망가지므로,
+      추가·수정할 때 부정 대상이 정말 "아픔"인지 매번 확인할 것.
+    """
+    path = Path(config.somatic_negative_file)
+    if not path.exists():
+        return []
+    if not _is_reviewed(path):
+        print(f"[긍정-신체정상] {path.name}은 검수 전이라 제외")
+        return []
+
+    texts = list(dict.fromkeys(_read_utterance_file(path)))
+    print(f"[긍정-신체정상] {len(texts)}건 로드")
+    return [{"text": t, "label": LABEL2ID["긍정"]} for t in texts]
+
+
 def _cap_per_label(samples: list[dict], cap: int | None, seed: int, name: str) -> list[dict]:
     """보조 소스를 라벨당 cap건으로 제한한다.
 
@@ -206,6 +231,7 @@ def build_dataset(config: TrainConfig) -> list[dict]:
 
     if config.use_somatic_seed:
         samples += load_somatic_seed(config)
+        samples += load_somatic_negatives(config)
 
     dist = Counter(s["label"] for s in samples)
     print(f"[전체] {len(samples)}건")

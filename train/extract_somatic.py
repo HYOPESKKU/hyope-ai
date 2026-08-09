@@ -59,9 +59,20 @@ _EMOTION = re.compile(
 )
 
 # 부정·회복 표현. 신체불편이 아니라 긍정 라벨 후보로 따로 뺀다.
+#
+# 주의: 여기서 부정되는 대상이 반드시 "아픔"이어야 한다. 처음에 `없어`를 그냥
+# 넣었다가 "돈이 없어", "사람이 없어", "관심이 없어"를 전부 긁어와서 68건 중
+# 57건이 오염됐다. 아픈 문장이 긍정 라벨로 들어가면 학습이 정면으로 망가진다.
 _NEGATED = re.compile(
-    r"(없어|없다|없네|않아|않다|나았|나아서|괜찮|멀쩡|건강해져|좋아졌|다행)"
+    r"(아픈\s*(데|곳|구석)\s*(가|는|이)?\s*없"      # 아픈 데(가) 없다
+    r"|이상(은|이)?\s*없"                          # 큰 이상은 없다
+    r"|안\s*아파|아프지\s*않"                       # 안 아파 / 아프지 않다
+    r"|괜찮|멀쩡|완치|다\s*나았|나아서|건강해져)"
 )
+
+# 이중부정 함정: "안 아픈 데가 없다"는 부정이 아니라 "다 아프다"는 뜻이다.
+# _NEGATED보다 먼저 걸러야 한다.
+_DOUBLE_NEGATIVE = re.compile(r"(안\s*아픈|아프지\s*않은|안아픈)\s*(데|곳|구석)?\s*(가|이)?\s*없")
 
 _MIN_LEN, _MAX_LEN = 6, 60
 
@@ -90,8 +101,10 @@ def extract(config: TrainConfig = TrainConfig()) -> tuple[list[str], list[str]]:
         s for s in sorted(set(sentences))
         if _BODY.search(s) and not _OTHER.search(s) and not _EMOTION.search(s)
     ]
-    somatic = [s for s in matched if not _NEGATED.search(s)]
-    negated = [s for s in matched if _NEGATED.search(s)]
+    # 이중부정("안 아픈 데가 없다" = 다 아프다)은 부정이 아니라 신체불편 쪽이다
+    negated = [s for s in matched
+               if _NEGATED.search(s) and not _DOUBLE_NEGATIVE.search(s)]
+    somatic = [s for s in matched if s not in set(negated)]
 
     print(f"본인 신체 문장 {len(matched)}건 → 신체불편 후보 {len(somatic)}건 "
           f"/ 부정·회복 후보 {len(negated)}건")
