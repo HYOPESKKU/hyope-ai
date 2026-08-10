@@ -18,7 +18,12 @@ from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
 from config import LABELS, TrainConfig
-from data_loader import load_aihub_data, load_somatic_negatives, load_somatic_seed
+from data_loader import (
+    expand_rows,
+    load_aihub_rows,
+    load_somatic_negatives,
+    load_somatic_seed,
+)
 from predict import EmotionPredictor
 
 TEST_RATIO = 0.1
@@ -39,20 +44,68 @@ def split_aihub_holdout(
     ⚠ 신체불편 점수는 시드 데이터 자기 자신에 대한 점수라 다른 라벨과 같은
       의미로 읽으면 안 된다. 시드는 작성된 문장이라 실제 통화 발화보다 쉽다.
     """
-    samples = load_aihub_data(config)
+    # ⚠ 반드시 행 단위로 나눈 뒤 펼친다. AI Hub 한 대화가 합본과 문장 변형으로
+    #   여러 샘플이 되는데, 펼친 뒤에 나누면 같은 대화의 합본이 학습에, 문장이
+    #   보류셋에 들어가 데이터 누출이 된다.
+    rows = load_aihub_rows(config)
     if config.use_somatic_seed:
-        samples += load_somatic_seed(config)
-        # 신체 정상 응답도 보류셋에 넣는다. 이 구분을 못 하면 healthRisk가
-        # 오작동하므로 반드시 측정 대상이어야 한다.
-        samples += load_somatic_negatives(config)
+        somatic = load_somatic_seed(config)
+        # somatic_candidates는 AI Hub 문장에서 뽑은 것이라 문장 단위 분해를 켜면
+        # 같은 문장이 두 라벨로 들어온다. 행 안에서 그 문장을 걷어낸다.
+        somatic_texts = {s["text"] for s in somatic}
+        for r in rows:
+            r["texts"] = [t for t in r["texts"] if t not in somatic_texts]
+        rows = [r for r in rows if r["texts"]]
 
-    rest, holdout = train_test_split(
-        samples,
+        # 신체불편·정상응답은 이미 문장 단위라 한 건이 곧 한 행이다.
+        # 신체 정상 응답을 보류셋에 넣는 이유: 이 구분 실패가 곧 healthRisk
+        # 오작동이라 반드시 측정 대상이어야 한다.
+        rows += [{"label": s["label"], "texts": [s["text"]]}
+                 for s in somatic + load_somatic_negatives(config)]
+
+    rest_rows, holdout_rows = train_test_split(
+        rows,
         test_size=test_ratio,
         random_state=config.seed,
-        stratify=[s["label"] for s in samples],
+        stratify=[r["label"] for r in rows],
     )
-    return rest, holdout
+    return _drop_cross_split_duplicates(expand_rows(rest_rows), expand_rows(holdout_rows))
+
+
+def _drop_cross_split_duplicates(
+    train: list[dict], holdout: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """학습셋과 보류셋에 똑같이 나타나는 문장을 정리한다.
+
+    행 단위로 나눠도 서로 다른 대화에 같은 문장이 들어있는 경우가 있다
+    ("너무 기쁘다.", "밤에 잠이 안 와." 같은 흔한 표현). 실측 8.9%.
+
+    두 가지로 갈린다.
+      - 라벨이 같으면: 학습에서 본 문장을 그대로 채점하는 셈이라 점수가 부풀려진다.
+        보류셋에서만 뺀다.
+      - 라벨이 다르면: 우리 라벨 체계 자체의 모호함이다. "밤에 잠이 안 와"가
+        한 대화에서는 불안, 다른 대화에서는 신체불편으로 붙어 있다. 모델이
+        무엇을 예측하든 틀리므로 학습·평가 양쪽에서 뺀다.
+    """
+    train_labels: dict[str, set[int]] = {}
+    for s in train:
+        train_labels.setdefault(s["text"], set()).add(s["label"])
+
+    ambiguous = {
+        s["text"] for s in holdout
+        if s["text"] in train_labels and s["label"] not in train_labels[s["text"]]
+    }
+    kept_holdout = [
+        s for s in holdout
+        if s["text"] not in train_labels and s["text"] not in ambiguous
+    ]
+    kept_train = [s for s in train if s["text"] not in ambiguous]
+
+    dropped_h = len(holdout) - len(kept_holdout)
+    if dropped_h:
+        print(f"[중복 정리] 보류셋에서 {dropped_h}건 제외 "
+              f"(라벨 상충 {len(ambiguous)}종은 학습에서도 제외)")
+    return kept_train, kept_holdout
 
 
 def evaluate(model_path: str, config: TrainConfig = TrainConfig()) -> dict:

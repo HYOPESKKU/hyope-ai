@@ -66,6 +66,13 @@ class TrainConfig:
     use_empathetic: bool = True            # KorEmpatheticDialogues 공개 데이터
     use_somatic_seed: bool = True          # 신체불편 시드 (직접 작성, 검수 필요)
 
+    # AI Hub 대화를 합본(사람문장1~4 이어붙이기)과 문장 단위로 **둘 다** 학습에 넣는다.
+    # 합본만 쓰면 AI Hub가 중앙값 104자, 신체불편 데이터가 26자라 모델이 감정이 아니라
+    # "짧으면 신체불편"이라는 길이 지름길을 학습한다(실측: "요새 사는 게 재미가 없어"를
+    # 신체불편 0.997로 오분류). 실제 추론 입력은 통화 한 턴의 짧은 답변이므로
+    # 짧은 변형이 오히려 실전에 가깝다.
+    use_sentence_split: bool = True
+
     # 보조 소스(KOTE·KorEmpathetic)의 라벨당 상한.
     #
     # 상한이 없으면 KOTE 혼자 39,355건으로 전체의 62%를 차지하고, 그중 분노가

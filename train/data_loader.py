@@ -1,5 +1,6 @@
 import random
 import csv
+import re
 import io
 import urllib.request
 import zipfile
@@ -26,11 +27,27 @@ _KOTE_LABELS = [
 _KOTE_TRAIN_URL = "https://raw.githubusercontent.com/searle-j/KOTE/main/train.tsv"
 
 
-def load_aihub_data(config: TrainConfig) -> list[dict]:
-    """AI Hub 감성 분류 CSV 로딩 → 돌봄 라벨 5종 매핑.
+# 문장 단위 분해 시 이보다 짧은 조각은 버린다. "응.", "네." 같은 맞장구는
+# 감정 라벨을 지탱하지 못하면서 노이즈만 늘린다.
+_MIN_SENTENCE_LEN = 6
 
-    CSV 구조: 성별, 감정_대분류, 사람문장1~4, 시스템응답1~4
-    사람문장 1~4를 이어붙여 하나의 텍스트로 사용한다.
+
+def load_aihub_rows(config: TrainConfig) -> list[dict]:
+    """AI Hub CSV를 **행 단위**로 읽는다 → [{"label", "texts": [...]}]
+
+    행 하나가 대화 하나다. texts에는 그 대화에서 뽑은 학습 텍스트 변형이 들어간다.
+
+    변형을 두 가지로 두는 이유(합본 + 문장 단위):
+      합본만 쓰면 AI Hub 텍스트가 중앙값 104자인데 신체불편 데이터는 26자라,
+      모델이 감정이 아니라 "짧으면 신체불편"이라는 길이 지름길을 학습한다.
+      실제로 "요새 사는 게 재미가 없어"를 신체불편 0.997로 찍는 걸 확인했다.
+      문장 단위만 쓰면 길이는 맞춰지지만 맥락이 사라져 라벨 노이즈가 커진다
+      ("어제 병원에 다녀왔어"는 슬픔 대화의 일부지만 그 문장만 보면 중립이다).
+      둘 다 넣으면 모든 라벨이 긴 것과 짧은 것을 함께 갖게 돼 길이가 라벨을
+      알려주지 못하고, 합본이 남아 맥락 기반 라벨도 보존된다.
+
+    ⚠ 반드시 행 단위로 분할한 뒤에 펼쳐야 한다. 펼친 다음 나누면 같은 대화의
+      합본이 학습에, 문장이 보류셋에 들어가 데이터 누출이 된다.
 
     주의: 이 zip은 원본 감성대화 말뭉치(27만 문장, 소분류 60종, 세대별 분리)의
     축약본이라 감정_소분류도 연령 컬럼도 없다. 노년 발화만 골라낼 수 없다.
@@ -39,24 +56,44 @@ def load_aihub_data(config: TrainConfig) -> list[dict]:
         with z.open("train.csv") as f:
             content = f.read().decode("utf-8-sig")
 
-    samples = []
+    rows: list[dict] = []
     skipped = 0
     for row in csv.DictReader(io.StringIO(content)):
+        mapped = AIHUB_TO_5.get(row["감정_대분류"].strip())
         sentences = [
             row[f"사람문장{i}"].strip()
             for i in range(1, 5)
             if row.get(f"사람문장{i}", "").strip()
         ]
-        text = " ".join(sentences)
-        mapped = AIHUB_TO_5.get(row["감정_대분류"].strip())
-        if not text:
+        if not sentences:
             continue
         if mapped is None:
             skipped += 1
             continue
-        samples.append({"text": text, "label": LABEL2ID[mapped]})
 
-    print(f"[AI Hub] {len(samples)}건 로드 (5종 매핑 제외 {skipped}건)")
+        texts = [" ".join(sentences)]
+        if config.use_sentence_split:
+            for s in sentences:
+                for piece in re.split(r"(?<=[.!?])\s+", s):
+                    piece = piece.strip()
+                    if len(piece) >= _MIN_SENTENCE_LEN:
+                        texts.append(piece)
+        # 한 문장짜리 대화는 합본과 문장이 같은 문자열이 된다
+        rows.append({"label": LABEL2ID[mapped], "texts": list(dict.fromkeys(texts))})
+
+    print(f"[AI Hub] {len(rows)}행 로드 (5종 매핑 제외 {skipped}행)")
+    return rows
+
+
+def expand_rows(rows: list[dict]) -> list[dict]:
+    """행 단위 데이터를 학습 샘플로 펼친다."""
+    return [{"text": t, "label": r["label"]} for r in rows for t in r["texts"]]
+
+
+def load_aihub_data(config: TrainConfig) -> list[dict]:
+    """AI Hub를 학습 샘플로 바로 펼쳐 반환한다(행 분할이 필요 없을 때)."""
+    samples = expand_rows(load_aihub_rows(config))
+    print(f"[AI Hub] → {len(samples)}건으로 펼침")
     return samples
 
 
@@ -218,6 +255,26 @@ def _cap_per_label(samples: list[dict], cap: int | None, seed: int, name: str) -
     return capped
 
 
+def resolve_somatic_conflicts(samples: list[dict], somatic: list[dict]) -> list[dict]:
+    """신체불편으로 검수된 문장이 다른 라벨로도 들어와 있으면 그쪽을 제거한다.
+
+    somatic_candidates.txt는 AI Hub 문장에서 뽑은 것이라, AI Hub를 문장 단위로도
+    학습에 넣는 순간 같은 문장이 두 라벨을 갖게 된다(실측 360건 중 237건, 66%).
+    "건강이 안 좋아."가 신체불편이면서 동시에 우울로 들어가면 두 라벨이 서로를
+    지운다.
+
+    신체불편을 살리는 이유: AI Hub 라벨은 **대화 전체**에 붙은 것이고, 신체불편은
+    사람이 그 **문장 하나**를 보고 "신체 호소다"라고 판정한 것이다. 문장 단위
+    학습에서는 문장 단위 판정이 맞다.
+    """
+    somatic_texts = {s["text"] for s in somatic}
+    kept = [s for s in samples if s["text"] not in somatic_texts]
+    dropped = len(samples) - len(kept)
+    if dropped:
+        print(f"[충돌 정리] 신체불편으로 검수된 문장이 다른 라벨로도 있던 {dropped}건 제거")
+    return kept
+
+
 def build_dataset(config: TrainConfig) -> list[dict]:
     """전체 학습 데이터 구성."""
     samples = load_aihub_data(config)
@@ -230,7 +287,9 @@ def build_dataset(config: TrainConfig) -> list[dict]:
         samples += _cap_per_label(load_empathetic_data(), cap, config.seed, "KorEmpathetic")
 
     if config.use_somatic_seed:
-        samples += load_somatic_seed(config)
+        somatic = load_somatic_seed(config)
+        samples = resolve_somatic_conflicts(samples, somatic)
+        samples += somatic
         samples += load_somatic_negatives(config)
 
     dist = Counter(s["label"] for s in samples)
