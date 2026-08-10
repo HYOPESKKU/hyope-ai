@@ -27,9 +27,13 @@ _KOTE_LABELS = [
 _KOTE_TRAIN_URL = "https://raw.githubusercontent.com/searle-j/KOTE/main/train.tsv"
 
 
-# 문장 단위 분해 시 이보다 짧은 조각은 버린다. "응.", "네." 같은 맞장구는
-# 감정 라벨을 지탱하지 못하면서 노이즈만 늘린다.
-_MIN_SENTENCE_LEN = 6
+# 이보다 짧은 텍스트는 어느 소스에서 왔든 버린다.
+#
+# 문장 단위 분해에서는 "응.", "네." 같은 맞장구를 걸러내고,
+# KorEmpathetic에서는 번역이 깨진 행을 걸러낸다 — situation 컬럼에 "1", "2",
+# "생식 얻기", "부모 통과" 같은 값이 들어간 게 33건 있다(영문 번역본의 잔재).
+# 어느 쪽이든 감정 라벨을 지탱하지 못하면서 노이즈만 늘린다.
+_MIN_TEXT_LEN = 6
 
 
 def load_aihub_rows(config: TrainConfig) -> list[dict]:
@@ -76,7 +80,7 @@ def load_aihub_rows(config: TrainConfig) -> list[dict]:
             for s in sentences:
                 for piece in re.split(r"(?<=[.!?])\s+", s):
                     piece = piece.strip()
-                    if len(piece) >= _MIN_SENTENCE_LEN:
+                    if len(piece) >= _MIN_TEXT_LEN:
                         texts.append(piece)
         # 한 문장짜리 대화는 합본과 문장이 같은 문자열이 된다
         rows.append({"label": LABEL2ID[mapped], "texts": list(dict.fromkeys(texts))})
@@ -228,6 +232,15 @@ def load_somatic_negatives(config: TrainConfig) -> list[dict]:
     return [{"text": t, "label": LABEL2ID["긍정"]} for t in texts]
 
 
+def _drop_too_short(samples: list[dict], name: str) -> list[dict]:
+    """_MIN_TEXT_LEN 미만 텍스트 제거. 소스마다 깨진 행의 모양이 달라서
+    로딩 시점이 아니라 합류 지점에서 공통으로 거른다."""
+    kept = [s for s in samples if len(s["text"]) >= _MIN_TEXT_LEN]
+    if len(kept) < len(samples):
+        print(f"[{name}] {_MIN_TEXT_LEN}자 미만 {len(samples) - len(kept)}건 제외")
+    return kept
+
+
 def _cap_per_label(samples: list[dict], cap: int | None, seed: int, name: str) -> list[dict]:
     """보조 소스를 라벨당 cap건으로 제한한다.
 
@@ -268,7 +281,14 @@ def resolve_somatic_conflicts(samples: list[dict], somatic: list[dict]) -> list[
     학습에서는 문장 단위 판정이 맞다.
     """
     somatic_texts = {s["text"] for s in somatic}
-    kept = [s for s in samples if s["text"] not in somatic_texts]
+    somatic_label = LABEL2ID["신체불편"]
+    # 라벨까지 봐야 한다. 텍스트만 보고 지우면 samples 안에 이미 신체불편으로
+    # 들어와 있던 샘플까지 날아간다(노트북 경로에서 실제로 그래서 신체불편이
+    # 0건이 됐다).
+    kept = [
+        s for s in samples
+        if s["label"] == somatic_label or s["text"] not in somatic_texts
+    ]
     dropped = len(samples) - len(kept)
     if dropped:
         print(f"[충돌 정리] 신체불편으로 검수된 문장이 다른 라벨로도 있던 {dropped}건 제거")
@@ -281,16 +301,20 @@ def build_dataset(config: TrainConfig) -> list[dict]:
     cap = config.max_per_label_per_aux_source
 
     if config.use_kote:
-        samples += _cap_per_label(load_kote_data(), cap, config.seed, "KOTE")
+        kote = _drop_too_short(load_kote_data(), "KOTE")
+        samples += _cap_per_label(kote, cap, config.seed, "KOTE")
 
     if config.use_empathetic:
-        samples += _cap_per_label(load_empathetic_data(), cap, config.seed, "KorEmpathetic")
+        emp = _drop_too_short(load_empathetic_data(), "KorEmpathetic")
+        samples += _cap_per_label(emp, cap, config.seed, "KorEmpathetic")
 
     if config.use_somatic_seed:
         somatic = load_somatic_seed(config)
         samples = resolve_somatic_conflicts(samples, somatic)
         samples += somatic
         samples += load_somatic_negatives(config)
+
+    samples = _cap_per_label(samples, config.max_per_label, config.seed, "전체")
 
     dist = Counter(s["label"] for s in samples)
     print(f"[전체] {len(samples)}건")

@@ -83,6 +83,13 @@ class TrainConfig:
     # None이면 상한 없음.
     max_per_label_per_aux_source: int | None = 2000
 
+    # 전체 합친 뒤 라벨당 상한. 문장 단위 분해로 AI Hub가 4배가 되면서 불균형이
+    # 20:1에서 50:1로 나빠졌다(신체불편은 387건 그대로). 가중치가 27까지 오르면
+    # 모델이 소수 클래스를 과대예측하는 쪽으로 쏠린다 — 가중치 13이던 이전
+    # 학습에서도 길이 지름길을 세게 파고들었다.
+    # 387 x 20 ≈ 8,000으로 잡아 불균형을 이전 수준으로 되돌린다.
+    max_per_label: int | None = 8000
+
     val_ratio: float = 0.1
     seed: int = 42
 
