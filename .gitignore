@@ -1,6 +1,5 @@
 # 학습 산출물 (KoELECTRA)
-model_output/
-model_output_backup*/
+model_output*/
 
 # 학습 산출물 (emotion_evaluation_model)
 emotion_evaluation_model/outputs/*
