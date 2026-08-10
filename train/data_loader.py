@@ -187,14 +187,17 @@ def load_somatic_seed(config: TrainConfig) -> list[dict]:
     else:
         print(f"[신체불편] 시드 파일 없음: {seed_path}")
 
-    cand_path = Path(config.somatic_candidates_file)
-    if cand_path.exists():
-        if _is_reviewed(cand_path):
-            cand_texts = _read_utterance_file(cand_path)
-            texts += cand_texts
-            print(f"[신체불편] 검수 완료 후보 {len(cand_texts)}건")
+    for attr, label in [("somatic_candidates_file", "추출 후보"),
+                        ("somatic_generated_file", "LLM 생성분")]:
+        path = Path(getattr(config, attr))
+        if not path.exists():
+            continue
+        if _is_reviewed(path):
+            more = _read_utterance_file(path)
+            texts += more
+            print(f"[신체불편] 검수 완료 {label} {len(more)}건")
         else:
-            print(f"[신체불편] {cand_path.name}은 검수 전이라 제외 "
+            print(f"[신체불편] {path.name}은 검수 전이라 제외 "
                   f'(검수 끝나면 상단을 "# REVIEWED: yes"로 바꿀 것)')
 
     # 다듬는 과정에서 서로 다른 문장이 같은 표현으로 수렴하기 쉽다.
@@ -220,14 +223,16 @@ def load_somatic_negatives(config: TrainConfig) -> list[dict]:
       아픈 문장이 긍정 라벨로 들어가면 학습이 정면으로 망가지므로,
       추가·수정할 때 부정 대상이 정말 "아픔"인지 매번 확인할 것.
     """
-    path = Path(config.somatic_negative_file)
-    if not path.exists():
-        return []
-    if not _is_reviewed(path):
-        print(f"[긍정-신체정상] {path.name}은 검수 전이라 제외")
-        return []
-
-    texts = list(dict.fromkeys(_read_utterance_file(path)))
+    texts: list[str] = []
+    for attr in ("somatic_negative_file", "somatic_negative_generated_file"):
+        path = Path(getattr(config, attr))
+        if not path.exists():
+            continue
+        if not _is_reviewed(path):
+            print(f"[긍정-신체정상] {path.name}은 검수 전이라 제외")
+            continue
+        texts += _read_utterance_file(path)
+    texts = list(dict.fromkeys(texts))
     print(f"[긍정-신체정상] {len(texts)}건 로드")
     return [{"text": t, "label": LABEL2ID["긍정"]} for t in texts]
 

@@ -50,6 +50,12 @@ class TrainConfig:
     # 신체불편 데이터가 전부 신체 단어를 포함하는 반면 긍정에는 거의 없어서,
     # 이게 없으면 모델이 "신체 단어 = 신체불편"이라는 지름길을 학습한다.
     somatic_negative_file: str = str(BASE_DIR / "data" / "somatic_negative_candidates.txt")
+    # LLM 생성분 (train/generate_somatic.py). ICOPE·FRAIL 도메인 기반.
+    somatic_generated_file: str = str(BASE_DIR / "data" / "somatic_generated.txt")
+    somatic_negative_generated_file: str = str(BASE_DIR / "data" / "somatic_negative_generated.txt")
+    # 평가 전용. 학습 경로에서 절대 읽지 않는다 — 이 파일이 학습에 섞이면
+    # 신체불편 성능을 측정할 수단이 사라진다.
+    somatic_eval_file: str = str(BASE_DIR / "data" / "somatic_eval.txt")
     output_dir: str = str(BASE_DIR / "model_output")
 
     # 학습 하이퍼파라미터

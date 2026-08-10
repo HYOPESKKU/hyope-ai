@@ -17,8 +17,12 @@ import torch
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
-from config import LABELS, TrainConfig
+from pathlib import Path
+
+from config import LABEL2ID, LABELS, TrainConfig
 from data_loader import (
+    _is_reviewed,
+    _read_utterance_file,
     expand_rows,
     load_aihub_rows,
     load_somatic_negatives,
@@ -63,13 +67,37 @@ def split_aihub_holdout(
         rows += [{"label": s["label"], "texts": [s["text"]]}
                  for s in somatic + load_somatic_negatives(config)]
 
+    # 평가 전용 생성분은 분할에 넣지 않고 보류셋에 통째로 더한다.
+    # 학습 데이터에서 뗀 39건만으로는 표본이 너무 적어 F1 95% 신뢰구간이
+    # [0.651, 0.851]까지 벌어졌다 — 개선인지 노이즈인지 구분이 안 되는 상태였다.
+    eval_only = _load_eval_only(config)
+
     rest_rows, holdout_rows = train_test_split(
         rows,
         test_size=test_ratio,
         random_state=config.seed,
         stratify=[r["label"] for r in rows],
     )
-    return _drop_cross_split_duplicates(expand_rows(rest_rows), expand_rows(holdout_rows))
+    train, holdout = _drop_cross_split_duplicates(
+        expand_rows(rest_rows), expand_rows(holdout_rows)
+    )
+    return train, holdout + eval_only
+
+
+def _load_eval_only(config: TrainConfig) -> list[dict]:
+    """평가 전용 신체불편 데이터. 학습 경로에서는 절대 읽지 않는다.
+
+    data_loader의 어느 로더도 이 파일을 건드리지 않으므로 학습에 섞일 수 없다.
+    """
+    path = Path(config.somatic_eval_file)
+    if not path.exists():
+        return []
+    if not _is_reviewed(path):
+        print(f"[평가전용] {path.name}은 검수 전이라 제외")
+        return []
+    texts = _read_utterance_file(path)
+    print(f"[평가전용] 신체불편 {len(texts)}건 추가")
+    return [{"text": t, "label": LABEL2ID["신체불편"]} for t in texts]
 
 
 def _drop_cross_split_duplicates(
