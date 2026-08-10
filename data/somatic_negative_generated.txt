@@ -1,6 +1,6 @@
 # 긍정 라벨 (신체 정상 응답)
 #
-# REVIEWED: no
+# REVIEWED: yes
 #   ↑ 검수를 마치면 yes로 바꾼다. 그전까지 사용되지 않는다.
 #
 # train/generate_somatic.py가 LLM으로 생성한 데이터다.
