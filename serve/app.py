@@ -27,6 +27,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "train"))
 from predict import EmotionPredictor  # noqa: E402
 
+from serve import assess as assess_mod  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("classifier")
 
@@ -63,6 +65,13 @@ class ClassifyBatchRequest(BaseModel):
     texts: list[str]
 
 
+class AssessRequest(BaseModel):
+    """hyope-call-agent의 loader/worker.py compute_assessment()가 보내는 것."""
+    call_log_entries: list[dict] = Field(default_factory=list)
+    logic_data: dict = Field(default_factory=dict)
+    emergencies: list = Field(default_factory=list)
+
+
 @app.get("/health")
 def health() -> dict:
     ok = "predictor" in _state
@@ -94,3 +103,27 @@ def classify_batch(req: ClassifyBatchRequest) -> dict:
     if not texts:
         return {"results": []}
     return {"results": _state["predictor"].predict_batch(texts)}
+
+
+@app.post("/assess")
+def assess(req: AssessRequest) -> dict:
+    """통화 결과 → 위험도 점수. worker.py의 compute_assessment()를 대체한다.
+
+    척도 판정(logic_data)이 주 신호이고 분류기는 척도 문항 바깥의 자유 발화를
+    보는 보조 신호다. 분류기가 죽어도 척도만으로 점수가 나오도록 구성했다.
+    """
+    if "predictor" not in _state:
+        raise HTTPException(503, "모델 로딩 중")
+
+    answers = [(e.get("answer") or "").strip()[:MAX_TEXT_LEN] for e in req.call_log_entries]
+    valid = [(i, a) for i, a in enumerate(answers) if a and a != "(무응답)"]
+
+    predictions: list[dict | None] = [None] * len(answers)
+    if valid:
+        for (i, _), r in zip(valid, _state["predictor"].predict_batch([a for _, a in valid])):
+            predictions[i] = r
+
+    assessment, adherence = assess_mod.compute(
+        req.call_log_entries, req.logic_data, req.emergencies, predictions
+    )
+    return {"assessment": assessment, "adherence_records": adherence}
